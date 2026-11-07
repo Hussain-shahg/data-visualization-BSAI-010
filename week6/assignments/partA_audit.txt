@@ -1,0 +1,81 @@
+==============================================================================
+TASK A -- make the files trustworthy
+==============================================================================
+
+------------------------------------------------------------------------------
+district_grid.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 25, dtypes:
+code                       str
+district                   str
+zone                       str
+population               int64
+households               int64
+area_km2               float64
+lon                    float64
+lat                    float64
+income_pc_usd            int64
+electrification_pct        str
+solar_kw_installed       int64
+outages                  int64
+outage_minutes           int64
+dtype: object
+key (`code`) uniqueness: 24 unique of 25 rows, 1 duplicate
+electrification_pct raw dtype: str (should be numeric)
+outage_minutes range: -1 to 6765079
+households/population ratio range (pre-clean): 5.70 to 5939.56
+  DECISION: Duplicate register row for D11 ('Kotla' and 'Kotla City', identical population/households/income) | detected: code.duplicated() == 2 rows for D11 | rule: Keep the first occurrence ('Kotla', the name matching the rest of the register's style); repair not possible -- no way to know which of the two near-identical rows is authoritative, so this is a DROP not a repair | rows affected: 1
+  DECISION: electrification_pct stored as text, some rows with a literal '%' suffix, 3 rows genuinely blank | detected: dtype was object/str, not float; .str.contains('%') | rule: Strip '%' and convert to float (2 rows affected); leave the 3 genuinely blank rows as NaN -- missing is not zero | rows affected: 5
+  DECISION: outage_minutes == -1 (operator not-available code, not a measurement) | detected: (outage_minutes < 0).sum() | rule: A negative duration is impossible; set to NaN, not dropped (outages count for those rows is still usable) | rows affected: 2
+  DECISION: D21 households = 182 (implies 5940 people per household -- impossible; every other district is 5.7-7.4) | detected: population/households ratio far outside the 5.7-7.4 range every other district falls in | rule: Repaired to 182,000 -- the three trailing zeros were lost (182 -> 182,000), confirmed because it is the ONLY value that reconciles the register's own published household total (8,908,512) and lands the ratio (5.94) inside the 5.7-7.4 band every other district falls in | rows affected: 1
+
+Cleaned: 24 rows -> clean/district_grid.csv
+Population / households totals: 57,857,000 / 8,908,512
+Persons-per-household range: 5.70 - 7.36
+electrification_pct range: 66.6 - 90.3, 3 missing
+Usable outage_minutes: 22 of 24, mean interruption length per district (outage_minutes/outages): 77-214 min
+Interruptions, all districts: 388,879
+
+------------------------------------------------------------------------------
+grid_daily.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 3061, zones: ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']
+  DECISION: Mixed date formats: 2887 ISO rows, 174 'dd/mm/yyyy' rows | detected: regex match against ISO pattern | rule: Parsed the two formats separately with dayfirst=True on the slash subset; format='mixed' would have silently relocated 65 of 174 rows | rows affected: 174
+  DECISION: Exact duplicate (date, zone) re-submissions, identical in every column | detected: full-row duplicated() within (date,zone) groups | rule: Keep first occurrence, drop the resubmitted copy | rows affected: 12
+  DECISION: Conflicting duplicate records: same (date, zone), identical cumulative_mwh but DIFFERENT peak_load_mw/outage_minutes ([(Timestamp('2025-10-25 00:00:00'), 'P3'), (Timestamp('2026-02-25 00:00:00'), 'P5'), (Timestamp('2026-08-16 00:00:00'), 'P5')]) | detected: duplicated (date,zone) rows that are not full-row duplicates | rule: Two sensor readings for the same zone-day, neither clearly wrong -- averaged peak_load_mw and outage_minutes rather than arbitrarily picking one | rows affected: 3
+  DECISION: peak_load_mw == -1 (SCADA not-available code, per the data dictionary) | detected: (peak_load_mw < 0).sum() | rule: Set to NaN -- an instantaneous peak cannot be negative | rows affected: 46
+  DECISION: Meter reading falls vs the previous day, same zone (P4, 2026-02-17: reading drops to 1180.0) | detected: groupby(zone).diff() < 0 | rule: A cumulative meter cannot fall except on a physical meter replacement -- flagged as a reset point: the single day's own delivered-energy diff is excluded from any sum (NaN), not treated as negative consumption, and later diffs resume from the new base | rows affected: 1
+  DECISION: Zone-days never filed at all: 128 of 3174 possible slots | detected: complete (date x zone) calendar vs the rows actually present | rule: Not reindexed in as rows (no fabricated reading exists to fill them with) -- counted and reported; any resample must use min_count / explicit diff logic that tolerates the gaps | rows affected: 128
+
+Cleaned: 3046 rows -> clean/grid_daily.csv
+Reporting span: 2025-04-01 to 2026-09-11 = 529 days x 6 zones = 3174 slots
+Zone-days never reported: 128
+Unusable peak_load_mw: 46
+Zone-days where the meter reading goes down: 1
+Energy delivered in zone P1, June 2026 (differenced): 1,199,207 MWh
+... the same month, if you sum() the column instead: 574,845,315 MWh (479x too big)
+
+------------------------------------------------------------------------------
+generation_mix.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 162, months: 18, sources: ['All sources', 'Fossil', 'Hydro', 'Imported', 'Renewable']
+  DECISION: 'All sources / Total' is a published subtotal filed as an extra row per month, not a generation category | detected: source == 'All sources'; summing every row gives exactly 200% of the real total | rule: Excluded from any sum over `source`/`subsource` -- summing every row as if it were a part double-counts the whole file | rows affected: 18
+Parts vs published total, worst month disagreement: 2 MWh (of 12,105,902)
+
+Cleaned (parts only): 144 rows -> clean/generation_mix.csv
+Summing every row of the RAW file: 200.0% of the energy generated
+
+------------------------------------------------------------------------------
+regions.geojson -- JOIN CHECK
+------------------------------------------------------------------------------
+24 GeoJSON features, 0 unmatched against the cleaned register
+
+==============================================================================
+DECISIONS TABLE -- 11 decisions
+==============================================================================
+
+Wrote partA_decisions.md (11 rows)
+
+==============================================================================
+End of Task A
+==============================================================================
