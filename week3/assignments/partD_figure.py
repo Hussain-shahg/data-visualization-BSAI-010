@@ -12,8 +12,9 @@ Build one 2×2 figure at 300 dpi:
 
 Data problems found in df.info() / df.describe() / df.value_counts():
   1. Mixed date formats in admit_date (ISO, UK slash, dd-Mon-YYYY).
-  2. Inconsistent ward capitalisation ("general medicine" vs "General Medicine"
-     vs "CARDIOLOGY").
+  2. Inconsistent ward spelling AND capitalisation (12 raw labels collapse to
+     4 true wards, e.g. "general medicine" / "Gen Medicine" / "General Medicine"
+     are the same ward; " I.C.U" / "icu" / "Intensive Care" / "ICU" are another).
   3. Physiologically impossible heart_rate values > 300 bpm (device faults).
   4. ward_los_wide.csv is in wide form — must be melted to long form for Seaborn.
 
@@ -69,10 +70,31 @@ df["admit_date"] = pd.to_datetime(df["admit_date"], dayfirst=True, format="mixed
 n_bad_date = df["admit_date"].isna().sum()
 print(f"\nCleaning 1 — unparseable admit_date: {n_bad_date} rows → date set to NaT")
 
-# Problem 2: inconsistent ward capitalisation
-df["ward"] = df["ward"].str.strip().str.title()
-print(f"Cleaning 2 — ward standardised to Title Case; "
-      f"unique wards now: {sorted(df['ward'].unique())}")
+# Problem 2: inconsistent ward capitalisation AND inconsistent spelling —
+# Title Case alone is not enough ("Gen Medicine" vs "General Medicine" are
+# different strings after title-casing too). Canonicalise on a normalised
+# key (lower, strip, drop non-letters) so every variant of the same ward
+# collapses to one label, then re-apply the display name.
+_raw_wards_before = sorted(df_raw["ward"].str.strip().unique())
+WARD_CANON = {
+    "generalmedicine": "General Medicine", "genmedicine": "General Medicine",
+    "cardiology": "Cardiology", "cardio": "Cardiology",
+    "daysurgery": "Day Surgery",
+    "intensivecare": "ICU", "icu": "ICU", "iicu": "ICU",
+}
+
+
+def _canon_ward(w):
+    key = "".join(ch for ch in str(w).strip().lower() if ch.isalpha())
+    if key not in WARD_CANON:
+        raise ValueError(f"unrecognised ward spelling: {w!r}")
+    return WARD_CANON[key]
+
+
+df["ward"] = df["ward"].apply(_canon_ward)
+print(f"Cleaning 2 — ward spellings canonicalised ({len(_raw_wards_before)} raw "
+      f"labels -> {df['ward'].nunique()} true wards): {_raw_wards_before} -> "
+      f"{sorted(df['ward'].unique())}")
 
 # Problem 3: device-fault heart_rate readings
 HEART_RATE_MAX = 300
@@ -170,7 +192,8 @@ fig.tight_layout()
 note = (
     f"Source: data/vitals_10k.csv | n={n_final:,} after removing {len(df_raw)-n_final} rows "
     f"(heart_rate > {HEART_RATE_MAX} bpm = device fault) | "
-    "Ward capitalised to Title Case | admit_date parsed with dayfirst=True | "
+    "12 raw ward spellings canonicalised to 4 true wards | "
+    "admit_date parsed with dayfirst=True | "
     "Palette: Okabe-Ito (colour-blind safe) | Panel 3 subsample: n=2 000, seed=42"
 )
 vizlib.save_fig(fig, OUT / "partD_figure.png", note=note)

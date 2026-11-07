@@ -93,7 +93,7 @@ Hue/saturation encodes the signed correlation value in a diverging palette (`RdB
 | # | Problem | Rule | Rows affected | Metric before → after |
 |---|---------|------|--------------|------------------------|
 | 1 | Mixed `admit_date` formats (ISO, UK slash, dd-Mon-YYYY) | `pd.to_datetime(..., format="mixed", dayfirst=True)` — set to NaT if unparseable | Varies (non-zero NaT count) | Not used in any panel |
-| 2 | Inconsistent ward capitalisation (`CARDIOLOGY`, `general medicine`) | `.str.strip().str.title()` | All rows | 4 distinct wards after standardisation |
+| 2 | Inconsistent ward spelling, not just capitalisation (12 raw labels collapse to 4 true wards) | Normalise to a letters-only lowercase key, map each key to one of 4 canonical names (Title Case alone does not merge "Gen Medicine" with "General Medicine") | All 10,000 rows | 12 raw labels → 4 true wards |
 | 3 | `heart_rate > 300 bpm` | Threshold: **300 bpm** (task spec: readings above 300 are device faults) | See console output | Heart-rate mean decreases; other vitals unchanged |
 | 4 | `ward_los_wide.csv` in wide form | `pd.melt()` required for Seaborn (used if loading ward_los_wide.csv) | N/A — used `vitals_10k.csv` directly | — |
 
