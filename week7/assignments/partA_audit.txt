@@ -1,0 +1,70 @@
+==============================================================================
+TASK A -- make the four files trustworthy
+==============================================================================
+
+------------------------------------------------------------------------------
+district_transit.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 25
+GeoJSON join, as filed: 22 of 25 match 24 features
+  DECISION: Register key stored inconsistently: lowercase ('d13') and an embedded space ('D 20') | detected: code values that don't match ^D\d{2}$ after the geojson join fails for them | rule: Normalised with .strip().upper().replace(' ', '') -- a formatting fix, not a repair of content | rows affected: 2
+  DECISION: Extra register row D00 'Qilabad Capital Territory' -- not one of the federation's 24 districts, no matching GeoJSON polygon | detected: code 'D00' has no match in regions.geojson's 24 features even after the casing fix | rule: Dropped -- it is a real administrative entity but not part of this 24-district join, and keeping it would inflate the population total past the federation's true 57,857,000 | rows affected: 1
+  DECISION: boardings_annual missing 3 trailing zeros for ['D05', 'D15', 'D23'] (reads as <1 boarding per resident per year, impossible for an urban transit network) | detected: boardings_annual < population | rule: Repaired x1000 -- confirmed because it is the only multiplier that reconciles the register's own published annual total (873,564,130) and the route-table cross-check | rows affected: 3
+  DECISION: road_km == -1.0 (impossible for a length) | detected: (road_km < 0).sum() | rule: Set to NaN, not dropped -- every other column for those rows is still usable | rows affected: 2
+  DECISION: fare_concession_pct stored as a 0-1 fraction instead of 0-100 for ['D02', 'D10', 'D18', 'D22'] | detected: fare_concession_pct < 1.0 while every other row is 20-40 | rule: Multiplied by 100 -- the column's own unit (per the data dictionary, a percentage) | rows affected: 4
+
+Cleaned: 24 rows -> clean/district_transit.csv
+GeoJSON join after repair: 24 of 24
+Population / households: 57,857,000 / 8,908,512
+boardings_annual total: 873,564,130
+Boardings per 1,000 residents: 4,683 - 30,655, national pooled 15,099
+fare_concession_pct: 20.9 - 42.6
+road_km usable: 22 of 24
+
+------------------------------------------------------------------------------
+routes.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 36, raw mode labels: ['BRT', 'Bus', 'Bus Rapid Transit', 'Ferry', 'Metro', 'brt']
+  DECISION: mode spelled 6 ways for 4 true modes ['BRT', 'Bus', 'Bus Rapid Transit', 'Ferry', 'Metro', 'brt'] | detected: distinct raw strings collapsing to 4 after case-folding and a known alias | rule: Normalised case + mapped 'Bus Rapid Transit' -> 'BRT' | rows affected: 36
+  DECISION: punctuality_pct == 999.0 (an operator code, impossible as a percentage) | detected: (punctuality_pct == 999).sum() | rule: Set to NaN | rows affected: 3
+  DECISION: cost_recovery_pct == 0.0 (a route recovering literally none of its cost from fares is a reporting code here, not a measurement -- both flagged rows are Ferry/Bus routes with otherwise-normal subsidy figures) | detected: (cost_recovery_pct == 0).sum(), cross-checked against subsidy_pkr_per_trip being normal | rule: Set to NaN | rows affected: 2
+
+Cleaned: 36 rows -> clean/routes.csv
+Routes per mode: {'Bus': 22, 'BRT': 6, 'Metro': 4, 'Ferry': 4}
+punctuality_pct usable: 33 of 36, range 62.9-98.8
+boardings_annual summed over routes: 873,564,820
+overlap_factor (districts_served): true=873,564,820, attributed=2,704,739,571, factor=3.096x (28 of 36 routes serve >1 district)
+
+------------------------------------------------------------------------------
+ridership_daily.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 2159, modes: ['BRT', 'Bus', 'Ferry', 'Metro']
+  DECISION: Mixed date formats: 1774 ISO, 385 'dd/mm/yyyy'. A naive month-first (US-style) parse fails outright on 230 of them but SILENTLY ACCEPTS the other 155 as a different (wrong) calendar day | detected: regex match against ISO; cross-parsed the slash subset both ways to measure the trap | rule: Parsed the two formats separately, dayfirst=True on the slash subset | rows affected: 385
+  DECISION: Exact duplicate (date, mode, ...) re-submissions -- all one mode (Bus), all one month (2026-05); some resubmitted in the OTHER date format, so a raw-string dedup before parsing would have missed them | detected: full-row duplicated() after date parsing | rule: Keep first occurrence | rows affected: 30
+  DECISION: Zone-days never filed: 63 of 548 days x 4 modes, unevenly spread ({'Ferry': 22, 'Bus': 19, 'Metro': 18, 'BRT': 4}) | detected: complete (date x mode) calendar vs rows present, checked BEFORE dropping the 7 impossible rows below (a filed-but-contradictory row is still a filing) | rule: Not reindexed in as rows -- counted and reported; resample with min_count-aware logic | rows affected: 63
+  DECISION: trips_on_time > trips_operated (more on-time departures than departures that ran at all) | detected: (trips_on_time > trips_operated).sum() | rule: Both trips_on_time AND trips_operated set to NaN for just these rows -- the contradiction means neither count on that row can be trusted, so both are excluded from any punctuality aggregation (pandas groupby().sum() skips NaN, which is equivalent to excluding the row from the rate calculation without discarding it). boardings/trips_scheduled/delay_minutes on the same row are independent counts and stay usable -- dropping the whole row would also discard real boardings data for that zone-day | rows affected: 7
+  DECISION: Two modes (['Bus', 'Ferry']) stop filing entirely after 2026-09-22 -- not scattered gaps, a reporting cutoff specific to those modes | detected: modes present before the cutoff but absent after it | rule: Flagged, not imputed -- any trend chart spanning the cutoff must say which modes it can still show | rows affected: 1055
+
+Cleaned: 2129 rows -> clean/ridership_daily.csv
+Boardings, 12 months to 2026-08-31: 845,531,940
+
+------------------------------------------------------------------------------
+fare_revenue.csv -- AUDIT
+------------------------------------------------------------------------------
+rows: 288, ticket_type: ['All tickets', 'Daily', 'Monthly', 'Single']
+  DECISION: 'All tickets' is the published subtotal filed as a 4th ticket_type row per month per mode, not a real fare product | detected: drilldown_check(): summing every row gives 200.0% of the parts | rule: Excluded from any sum over ticket_type -- summing every row double-counts the file | rows affected: 72
+
+Cleaned (parts only): 216 rows -> clean/fare_revenue.csv
+Journeys: 934,051,014, revenue: 36,669,953,119 PKR, mean fare 39.3 PKR/journey
+
+Boardings / journeys, whole file: 1.305
+
+==============================================================================
+DECISIONS TABLE -- 14 decisions
+==============================================================================
+
+Wrote partA_decisions.md (14 rows)
+
+==============================================================================
+End of Task A
+==============================================================================
